@@ -58,7 +58,7 @@ def ask_question():
         with torch.no_grad():
             outputs = model.generate(
                 input_ids=inputs.input_ids,
-                attention_mask=inputs.attention_mask,  # Явно передаем mask
+                attention_mask=inputs.attention_mask,
                 max_new_tokens=80,
                 do_sample=True,
                 temperature=0.3,
