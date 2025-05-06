@@ -41,8 +41,8 @@ def upload_file():
 @app.route('/ask', methods=['POST'])
 def ask_question():
     try:
-        data = request.json.get('data', [])[:10]  # Берем первые 10 строк
-        question = request.json.get('question', '')[:150]  # Обрезаем вопрос
+        data = request.json.get('data', [])[:10]
+        question = request.json.get('question', '')[:150]
         
         prompt = f"Анализ данных:\n{data}\n\nВопрос: {question}\nОтвет:"
         
@@ -52,7 +52,7 @@ def ask_question():
             return_tensors="pt",
             truncation=True,
             max_length=512,
-            padding=True  # Включаем padding для генерации mask
+            padding=True
         )
         
         with torch.no_grad():
