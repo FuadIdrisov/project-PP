@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Оптимизированный анализатор Excel</title>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #status {
+            color: #d9534f;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px 0;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Анализ Excel с защитой от перегрева</h2>
+        <div id="status">Статус: готов к работе</div>
+        
+        <input type="file" id="fileInput" accept=".xlsx,.xls">
+        <button onclick="uploadFile()" id="uploadBtn">Загрузить</button>
+        
+        <div id="questionSection" style="display:none; margin-top:20px;">
+            <input type="text" id="questionInput" placeholder="Ваш вопрос..." style="width:100%; padding:8px;">
+            <button onclick="askQuestion()" id="askBtn">Спросить</button>
+            <div id="answer" style="margin-top:10px; padding:10px; background:#f9f9f9;"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentData = null;
+        const cooldownTime = 1500; // 1.5 сек между запросами
+
+        async function uploadFile() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) return;
+            
+            document.getElementById('status').textContent = "Статус: обработка...";
+            document.getElementById('uploadBtn').disabled = true;
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                if (result.error) throw new Error(result.error);
+                
+                currentData = result.data;
+                document.getElementById('questionSection').style.display = 'block';
+                document.getElementById('status').textContent = "Статус: загружено " + result.data.length + " строк";
+            } catch (e) {
+                document.getElementById('status').textContent = "Ошибка: " + e.message;
+            } finally {
+                document.getElementById('uploadBtn').disabled = false;
+            }
+        }
+
+        async function askQuestion() {
+            const question = document.getElementById('questionInput').value.trim();
+            if (!question || !currentData) return;
+            
+            document.getElementById('askBtn').disabled = true;
+            document.getElementById('status').textContent = "Статус: генерируем ответ...";
+            
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        data: currentData,
+                        question: question 
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.error) throw new Error(result.error);
+                
+                document.getElementById('answer').innerHTML = 
+                    `<strong>Ответ:</strong> ${result.answer}<br>${result.warning || ''}`;
+                
+                document.getElementById('status').textContent = "Статус: готово (ожидайте 1.5 сек)";
+                setTimeout(() => {
+                    document.getElementById('status').textContent = "Статус: готов к новым запросам";
+                }, cooldownTime);
+                
+            } catch (e) {
+                document.getElementById('status').textContent = "Ошибка: " + e.message;
+            } finally {
+                setTimeout(() => {
+                    document.getElementById('askBtn').disabled = false;
+                }, cooldownTime);
+            }
+        }
+    </script>
+</body>
+</html>
