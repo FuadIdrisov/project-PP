@@ -1,79 +1,54 @@
-from flask import Flask, request, jsonify, render_template
-import pandas as pd
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
+import re
+from flask import Flask, request, jsonify, send_from_directory
+import main
 
 app = Flask(__name__)
 
-# Инициализация модели
-model_name = "microsoft/phi-2"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float32,
-    device_map="cpu"
-)
+# Загружаем данные и модель
+directions, facts_map = main.load_data("Направления.xlsx")
+gen_pipeline, tokenizer = main.load_model()
 
-# Явно устанавливаем pad_token
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
+def clean_question(raw: str) -> str:
+    text = raw.replace('\r', '').strip()
+    # Разбиваем на строки и отбрасываем помехи
+    good_lines = [
+        line.strip()
+        for line in text.split('\n')
+        if line and not re.match(r'^\s*(Проверка|Вариант|[-–—])', line, re.IGNORECASE)
+    ]
+    # Ищем в каждой строке первый вопросительный знак
+    for line in good_lines:
+        m = re.search(r'(.+\?)', line)
+        if m:
+            return m.group(1).strip()
+    return good_lines[0] if good_lines else raw
 
-@app.route('/')
-def home():
-    return render_template('index.html')
+@app.route("/")
+def index():
+    return send_from_directory(".", "index_v3.html")
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "Empty filename"}), 400
-    
-    try:
-        df = pd.read_excel(file, engine='openpyxl')
-        data = df.where(pd.notnull(df), None).to_dict(orient="records")
-        return jsonify({"data": data})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route("/ask", methods=["POST"])
+def ask():
+    data = request.get_json(force=True)
+    raw_q = data.get("question", "")
+    if not raw_q.strip():
+        return jsonify({"error": "Не указан вопрос"}), 400
 
-@app.route('/ask', methods=['POST'])
-def ask_question():
-    try:
-        data = request.json.get('data', [])[:10]
-        question = request.json.get('question', '')[:150]
-        
-        prompt = f"Анализ данных:\n{data}\n\nВопрос: {question}\nОтвет:"
-        
-        # Токенизация с явным указанием attention_mask
-        inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-            padding=True
-        )
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                input_ids=inputs.input_ids,
-                attention_mask=inputs.attention_mask,
-                max_new_tokens=80,
-                do_sample=True,
-                temperature=0.3,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id
-            )
-            
-            # Декодируем, пропуская спецтокены
-            answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            answer = answer.split("Ответ:")[-1].strip()
-        
-        return jsonify({"answer": answer})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    question = clean_question(raw_q)
+    direction = main.extract_direction(question, directions)
+    if not direction:
+        return jsonify({"error": "Направление не найдено"}), 404
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    answer = main.generate_response(
+        gen_pipeline, tokenizer,
+        direction, facts_map[direction],
+        question
+    )
+    return jsonify({
+        "question": question,
+        "direction": direction,
+        "answer": answer
+    })
+
+if __name__ == "__main__":
+    app.run(debug=True)
