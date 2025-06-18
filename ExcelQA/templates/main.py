@@ -1,102 +1,93 @@
-import pandas as pd
-from difflib import get_close_matches
-from transformers import pipeline, AutoTokenizer
+from sentence_transformers import SentenceTransformer, util
+import json
+import random
 
-# --- Конфигурация ---
-MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-MAX_NEW_TOKENS = 80
-TEMPERATURE = 0.4
+dialog_history = []
 
-# --- Загрузка и кэширование данных ---
-def load_data(file_path: str):
-    """Читает Excel и возвращает dict: направление → факты."""
-    df = pd.read_excel(file_path, sheet_name="Лист1", engine="openpyxl")
-    df = df.fillna("не указано")
-    # Преобразуем в словарь
-    facts_map = {}
-    for _, row in df.iterrows():
-        facts_map[row["Направление"]] = {
-            "баллы": row["Проходной балл ЕГЭ"],
-            "предметы": row["Любимые предметы"],
-            "профессии": row["Будущие профессии"],
-            "специализация": row["Специализация"]
-        }
-    return list(facts_map.keys()), facts_map
+# Порог сходства для ответа
+SIMILARITY_THRESHOLD = 0.5
 
-# --- Загрузка модели один раз при старте ---
+GREETINGS_LIST = ["привет", "здравствуй", "добрый день", "хай", "hello", "hi"]
+
 def load_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    gen = pipeline(
-        "text-generation",
-        model=MODEL_NAME,
-        tokenizer=tokenizer,
-        device="cpu",
-        torch_dtype="auto"
-    )
-    return gen, tokenizer
+    return SentenceTransformer("trained_embed_model")
 
-# --- Поиск направления с fuzzy-match ---
-def extract_direction(question: str, directions: list[str]) -> str | None:
-    q = question.lower()
-    #предобработка q: исправление опечаток и т.п.
-    match = get_close_matches(q, directions, n=1, cutoff=0.4)
-    return match[0] if match else None
+def load_qa_pairs(jsonl_path):
+    questions, answers = [], []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            if len(obj["texts"]) == 2:
+                questions.append(obj["texts"][0])
+                answers.append(obj["texts"][1])
+    return questions, answers
 
-# --- Формирование короткой подсказки и вызов модели ---
-def generate_response(
-    gen_pipeline,
-    tokenizer,
-    direction: str,
-    facts: dict,
-    question: str
-) -> str:
-    # Собираем короткую строку с данными
-    facts_str = (
-        f"Проходной балл: {facts['баллы']}. "
-        f"Предметы: {facts['предметы']}. "
-        f"Профессии: {facts['профессии']}. "
-        f"Специализация: {facts['специализация']}."
-    )
-    prompt = (
-        f"Ты — консультант приёмной комиссии, которые отвечает на вопросы по поступления в ИРИТ-РТФ.\n"
-        f"Направление: {direction}\n"
-        f"{facts_str}\n"
-        f"Вопрос: {question}\n"
-        f"Ответь чётко и кратко, 2–3 предложения. "
-        f"Не упоминай, что ты — модель ИИ."
-    )
+def get_best_answer_with_threshold(model, question, questions_list, answers_list):
+    question_embedding = model.encode(question, convert_to_tensor=True)
+    db_embeddings = model.encode(questions_list, convert_to_tensor=True)
 
-    # Генерируем текст, передавая только prompt и параметры
-    out = gen_pipeline(
-        prompt,
-        max_new_tokens=MAX_NEW_TOKENS,
-        temperature=TEMPERATURE,
-        do_sample=True,
-        pad_token_id=tokenizer.eos_token_id,
-        return_full_text=False
-    )
-    # Берём сгенерированный текст и чуть-чуть его чистим
-    answer = out[0]["generated_text"].strip()
-    return answer
+    similarities = util.cos_sim(question_embedding, db_embeddings)[0]
+    top_idx = similarities.argmax().item()
+    top_sim = similarities[top_idx].item()
 
-# --- Пример использования в консоли ---
-if __name__ == "__main__":
-    directions, facts_map = load_data("Направления.xlsx")
-    gen_pipeline, tokenizer = load_model()
+    best_answer = answers_list[top_idx]
+    dialog_history.append((question, best_answer))
+    return best_answer, top_sim
 
-    while True:
-        q = input("🎓 Ваш вопрос (или «выход»): ").strip()
-        if q.lower() == "выход":
-            break
-        dir_found = extract_direction(q, directions)
-        if not dir_found:
-            print("❌ Направление не найдено.")
-            continue
-        answer = generate_response(
-            gen_pipeline,
-            tokenizer,
-            dir_found,
-            facts_map[dir_found],
-            q
-        )
-        print("💡 Ответ:", answer)
+def is_greeting(text: str) -> bool:
+    return any(g in text.lower() for g in GREETINGS_LIST)
+
+def is_thank_you(text: str) -> bool:
+    thank_you_phrases = [
+        "спасибо", "спасибо большое", "огромное спасибо", "спс", "благодарю",
+        "спасибо тебе", "благодарствую", "спасибо за помощь", "thanks", "thank you",
+        "спасибо огромное", "ты помог", "ты молодец", "спасибо за ответ", "спасибо, бот",
+        "пасиб", "пасибки", "благодарю за всё", "респект", "благодарочка"
+    ]
+    text_lower = text.lower()
+    return any(phrase in text_lower for phrase in thank_you_phrases)
+
+def is_goodbye(text: str) -> bool:
+    goodbye_phrases = [
+        "пока", "до свидания", "увидимся", "бай", "bye",
+        "до встречи", "прощай", "всего доброго", "счастливо", "чао",
+        "мне пора", "я пошёл", "ещё увидимся", "увидимся позже", "я ухожу",
+        "выключаюсь", "до завтра", "всё, пока", "бот, пока", "счастливо оставаться"
+    ]
+    text_lower = text.lower()
+    return any(phrase in text_lower for phrase in goodbye_phrases)
+
+def get_greeting_response():
+    return "Привет! Чем могу помочь?"
+
+def get_thank_you_response():
+    if not dialog_history:
+        return random.choice([
+            "Я ещё ничего не сделал, но спасибо!",
+            "Спасибо, но я пока не помог!",
+            "Благодарю, хотя я ещё не участвовал в диалоге!",
+            "Спасибо за вежливость, но я жду вашего вопроса!",
+            "Приятно слышать благодарность, но давайте начнём диалог!",
+        ])
+    else:
+        return random.choice([
+            "Пожалуйста! Обращайтесь ещё!",
+            "Всегда рад помочь!",
+            "Не стоит благодарности!",
+            "Рад был помочь!",
+        ])
+
+def get_goodbye_response():
+    if not dialog_history:
+        return random.choice([
+            "Прощайте!",
+            "До свидания!",
+            "Всего доброго!",
+            "Пока!",
+        ])
+    else:
+        return random.choice([
+            "До свидания! Удачи!",
+            "Был рад помочь! До новых встреч!",
+            "До встречи!",
+        ])
