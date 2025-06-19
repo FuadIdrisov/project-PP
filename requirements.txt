@@ -1,0 +1,6 @@
+flask
+pandas
+sentence_transformers
+json
+random
+torch.utils.data
